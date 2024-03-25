@@ -3,8 +3,8 @@ options ps=80 ls=90 pageno=1 nodate formdlim='-' notes threads;
 title;
 ODS HTML CLOSE;
 ODS HTML;
-
 libname out "C:\Research_Networks\Output";
+
 
 data track;
     t=time(); d=today();
@@ -13,7 +13,7 @@ data track;
 run;
 
 proc iml;
-start lsobj(beta, y, x);
+start lsobj(beta, y, x) global(small3);
 	n=nrow(y); 
    	score=x`*(y-x*beta)/n; 
 	hh=0; 
@@ -29,7 +29,55 @@ start lsobj(beta, y, x);
 	return(sic);
 finish; 
 
-/* Estimate DAGS for a sequence of candidate lambda's */  
+/* Estimate bigB for a sequence of candidate lambda's */ 
+start Tuning1(lambda1, bestB1, theorder, lambmax, m, q, allx1, bigBini1) global(NoNode, nj);
+	oldnj=nj; nj=nrow(allx1)/NoNode; 
+	NoObsInt=nrow(allx1); NoObs=NoObsInt-nj; 
+	bicpen1=log(NoObs)/NoObs;
+	lambda1=lambmax;
+	do mm=1 to m;
+		lambda=lambmax*q**(mm-1); 
+		
+		bigBnow1=findgraph2(lambda, allx1, bigBini1); 
+		pvmat=getpv2(bigBnow1, allx1);
+		wantall=topsort(bigBnow1, pvmat);
+		bigBnow1=wantall[, 1:NoNode];
+		theorder=wantall[, (NoNode+1)];
+	
+		/* using the estimated graph, compute SIC tuning parameter selector (eveluated at the penalized Bhat). */
+		sic1=0; 
+		do j=1 to NoNode; 
+			ignorej=loc((1:NoNode)^=j); 
+			if j=1 then whichrow=(nj+1):NoObsInt;
+			if (j>1 & j<NoNode) then whichrow=(1:((j-1)#nj))||((j#nj+1):NoObsInt);
+			if j=NoNode then whichrow=1:((NoNode-1)#nj);
+			
+			yw=allx1[whichrow, ]; 
+			yw=yw-yw[:,];
+			y=yw[, j]; w=yw[, ignorej];
+			sic1=sic1+lsobj(bigBnow1[ignorej, j], y, w);
+		end;
+
+		if mm=1 then do; 
+			smallestsic1=sic1+sum(bigBnow1^=0)#bicpen1; 
+			sic1=smallestsic1;
+			bestB1=bigBnow1;
+		end; 
+		else do; 
+			sic1=sic1+sum(bigBnow1^=0)#bicpen1; 
+			if sic1<=smallestsic1 then do;
+				smallestsic1=sic1;
+				lambda1=lambda;
+				bestB1=bigBnow1;
+			end;
+		end;
+    end;
+
+	nj=oldnj; 
+finish;
+
+
+/* Estimate bigB for a sequence of candidate lambda's */  
 start Tuning(lambda1, lambda2, bestB1, bestB2, lambmax, m, q, allx1, allx2, bigBini1, bigBini2) global(NoNode, nj, NoObsInt, bicpen1, bicpen2);
 	lambda1=lambmax; lambda2=lambmax;
 	do mm=1 to m;
@@ -43,6 +91,7 @@ start Tuning(lambda1, lambda2, bestB1, bestB2, lambmax, m, q, allx1, allx2, bigB
 		pvmat=getpv2(bigBnow2, allx2);
 		bigBnow2=topsort(bigBnow2, pvmat)[, 1:NoNode];
 		
+		/* using the estimated graph, compute SIC tuning parameter selector (eveluated at the penalized Bhat). */
 		sic1=0; sic2=0; 
 		do j=1 to NoNode; 
 			ignorej=loc((1:NoNode)^=j); 
@@ -89,15 +138,15 @@ start Tuning(lambda1, lambda2, bestB1, bestB2, lambmax, m, q, allx1, allx2, bigB
 finish;
 
 
-/* Use nodewide-parent-selection method in Huang and Zhang (2012) to select parents for each node */
-start findgraph2(lambda, allw, bigBini0) global(nj, maxit, small, small2, scada);
+/* Use my earlier variable selection code to select parents for each node based on corrected score method with LQA algorithm*/
+start findgraph2(lambda, allw, bigBini0) global(nj, threshold, maxit, small, small2, scada);
 	pall=ncol(allw); dall=pall-1; totn=nrow(allw); 
 	oldnj=nj; nj=totn/pall;
 	nall=totn-nj; 
 	 
 	bigBnow=bigBini0; n=nall; itno=0; absdiff=10; 
 	
-	do while (absdiff>small2 & itno<=maxit);
+	do while (absdiff>threshold & itno<=maxit);
 		bigBlast=bigBnow; itno=itno+1;
  
 		do j=1 to pall;
@@ -120,7 +169,7 @@ start findgraph2(lambda, allw, bigBini0) global(nj, maxit, small, small2, scada)
 			w=allw[whichrow, label]; w=w-w[:,];
 
 			absdiff_in=10; itno_in=0; rc=0;
-		    do while (absdiff_in>small2 & itno_in<maxit);
+		    do while (absdiff_in>threshold & itno_in<maxit);
 				noneg=j(d, 1, 0);
 				diff=scada#lambda-abs(betanow);
 			    pick=loc(diff>0);
@@ -131,7 +180,7 @@ start findgraph2(lambda, allw, bigBini0) global(nj, maxit, small, small2, scada)
 				hess=-w`*w/n-siglam;
 			    score=w`*(y-w*betanow)/n-penal;
 			    
-		        if (abs(det(hess))>small2) then do;
+		        if (abs(det(hess))>threshold) then do;
 		            parmest=betanow-inv(hess)*score;
 		        	absdiff_in=max(abs(parmest-betanow)); itno_in=itno_in+1;
 		            
@@ -170,7 +219,7 @@ start findgraph2(lambda, allw, bigBini0) global(nj, maxit, small, small2, scada)
 	return(bigBnow); 
 finish;
 
-/* Obtain a p-value matrix for the unpenalized estimated regression coefficients */
+/* Obtain a p-value matrix for the unpenalized estimated regression coefficients obtained from corrected score method */
 start getpv2(graphest, allw) global(nj);
 	pall=ncol(allw); totn=nrow(allw); 
 	oldnj=nj; nj=totn/pall; 
@@ -210,10 +259,10 @@ start getpv2(graphest, allw) global(nj);
 finish;
 
 
-/* Delete cycles in an initial estimated graph based on p-values */
+/* Delete cycles based on p-values only */
 start topsort(graphest, pvmat); 
 	if (norm(graphest)=0) then goto emptygraph;
-	
+
 	NoNode=ncol(graphest);
 	noid=(1:NoNode); topo=0;
 
@@ -228,6 +277,7 @@ start topsort(graphest, pvmat);
 		end;
 		
 		if (anyrt=0) then do;
+			/* set the "weakest" link at 0 */
 			weakest=loc(pvmat=max(pvmat[loc(graphest^=0)]));
 			graphest[weakest]=0;
 			pvmat[weakest]=-1;
@@ -251,6 +301,7 @@ start topsort(graphest, pvmat);
 			end;	
 		end;
 		if (anyrt=0) then do;
+			/* set the "weakest" link at 0 */
 			weakest=loc(pvmat=max(pvmat[loc(graphest^=0)]));
 			graphest[weakest]=0;
 			pvmat[weakest]=-1;
@@ -280,6 +331,7 @@ start Khan(graphini);
 		end;
 		
 		if (anyrt=0) then do;
+			/* set the "weakest" link at 0 */
 			weakest=loc(pvmat=min(pvmat[loc(graphini^=0)]));
 			graphini[weakest]=0;
 			pvmat[weakest]=888;
@@ -303,6 +355,7 @@ start Khan(graphini);
 			end;	
 		end;
 		if (anyrt=0) then do;
+			/* set the "weakest" link at 0 */
 			weakest=loc(pvmat=min(pvmat[loc(graphini^=0)]));
 			graphini[weakest]=0;
 			pvmat[weakest]=888;
@@ -315,35 +368,9 @@ start Khan(graphini);
 	return(graphini||topo`);
 finish;
 
-/* Compute metrics used to assess the quality of an estimated graph */
-start quality(graphest, truegraph);
-	wanttotal=ncol(loc(truegraph^=0)); 
-	pall=ncol(truegraph); 	
-	allpossible=pall*(pall-1)/2; 
-	allneg=allpossible-wanttotal;
 
-	predicted=sum(graphest^=0);	
-	if predicted=0 then do; 
-		expected=0; reversed=0;
-	end;
-	else do; 
-		expected=sum(truegraph[loc(graphest^=0)]^=0); 
-		reversed=sum(truegraph`[loc(graphest^=0)]^=0);
-	end;
-	expected=sum(truegraph[loc(graphest^=0)]^=0); 
-	reversed=sum(truegraph`[loc(graphest^=0)]^=0);
-	fp=predicted-expected-reversed;
-	missing=sum((graphest[loc(truegraph^=0)]=0)#(graphest`[loc(truegraph^=0)]=0));
-	tpr=expected/wanttotal; 
-	if predicted=0 then fdr=0;
-	else fdr=(reversed+fp)/predicted; 
-	specif=(sum(graphest[loc(truegraph=0)]=0)-pall)/(sum(truegraph=0)-pall); 
-	corre=(expected+allneg*specif)/allpossible;  
-	assess=tpr||fdr||specif||corre;
-	return(assess);
-finish;
 
-/* compute pvalues used in PI score given two data set */
+/* compute p-values used in PI score given two data set */
 start meanvartest(sample1, sample2, samsize1, samsize2) global(varpvct); 
 	sampvar1=var(sample1); sampvar2=var(sample2);
 	
@@ -375,7 +402,7 @@ start meanvartest(sample1, sample2, samsize1, samsize2) global(varpvct);
 finish; 
 
 
-/* Find PI scores and DISC scores of nodes given two data sets from two networks and two estimated regression coefficients matrices */
+/* Find PI scores and DISC scores of p nodes given two data sets from two networks and two estimated regression coefficients matrices */
 start Find2score(PIscore, disc, tophowmany, allx1, allx2, bigBnow1, bigBnow2, randomseed) global(dall, NoNode, split, nj, NoObs, NoObsInt, pvcutoff); 
 		/* Use the estimated graph structure to get unpenalized estimated regression coefficients */
 		resids1to2=j(NoObs, NoNode, 0); resids2to1=j(NoObs, NoNode, 0); 
@@ -497,20 +524,20 @@ start Find2score(PIscore, disc, tophowmany, allx1, allx2, bigBnow1, bigBnow2, ra
 			end;
 
 			PIscore=PIscore+(exp(-pvs1to2[, 3])<>exp(-pvs2to1[, 3]))/(exp(-pvs1to1[, 3])<>exp(-pvs2to2[, 3]));
-			tophowmany=tophowmany+(sum(pvs1to2[, 3]<pvcutoff))<>(sum(pvs2to1[, 3]<pvcutoff));
+			tophowmany=tophowmany+(sum(pvs1to2[, 3]<pvcutoff))<>(sum(pvs2to1[, 3]<pvcutoff)); 
 		end;
 		PIscore=PIscore/split;
 		tophowmany=ceil(tophowmany/split);
 finish; 
 
 
-/* Benjamini-Hochberg procedure: input original pvalues, output the node indices with significant pvalues after BH adjustment */
+/* Benjamini-Hochberg procedure: input original pvalues, output the node indices with significant p-values after BH adjustment */
 start BHpv(pvs) global(fdr); 
 	m=max(nrow(pvs),ncol(pvs)); 
 	ids=do(1, m, 1)`;
 	tag=ids||pvs;
 	call sort(tag, 2);
-	crt=fdr*(ids/m); 
+	crt=fdr*(ids/m); /* this is the BH critical value for each sorted pvalue */
 	lower=loc(tag[, 2]<crt);
 	if ncol(lower)>0 then do;
 		cutoff=lower[ncol(lower)];
@@ -518,7 +545,7 @@ start BHpv(pvs) global(fdr);
 		return(claim); 
 	end;
 	else do;
-		return(-1); /* this means no significant p-values */
+		return(-1); /* this means no significant pvalues */
 	end;
 finish; 
 
@@ -550,7 +577,7 @@ start FindDriver(DiffNode, bigBnow1, bigBnow2) global(drivernodes, nodriv, notdr
 		spe4driv=ncol(xsect(setdif(1:NoNode, touched), notdriv))/(NoNode-nodriv);  
 		fdr4driv=ncol(xsect(touched, notdriv))/claimdriv; 
 	end;
-	else do;  
+	else do;  /* do not claim any driver node */
 		tpr4driv=0; spe4driv=1; fdr4driv=0; touched=j(1, NoNode, -88); 
 	end;
 	return(tpr4driv||spe4driv||fdr4driv||touched);
@@ -586,15 +613,16 @@ rt=lambmin/lambmax;
 m=20;
 q=rt**(1/(m-1));
 
-permno=300; 
-njs={5, 10, 20, 30, 40, 50, 60}; 
+permno=10; /* Number of bootstrap samples */
+njs={5, 10}; /* Number of intervention data points in each condition */ 
 nonj=nrow(njs);
 
 testout=j(1, 4+2*2*2*3, 0);
 emppower=j(1, 1+2*2*8, 0); 
 
 nographs=1;
-MCrep=100; jumpstart=4277;
+MCrep=2; /* Number of Monte Carlo replicates */
+jumpstart=4277;
 split=10; case=2;
 if case=1 then do; 
 	maxparent=6; wanttotal=4#pall; 
@@ -810,7 +838,12 @@ do nog=1 to nographs;
 				if nopar[k]>0 then do;
 					whichpar=loc(bigBx[, thisnode]^=0);
 					/* generate Gaussian DAG */
-					allx1[whichrow, thisnode]=(allx1[whichrow, whichpar]#allx1[whichrow, whichpar])*bigBx[whichpar, thisnode]+sige#normal(seede+k);
+					allx1[whichrow, thisnode]=allx1[whichrow, whichpar]*bigBx[whichpar, thisnode]+sige#normal(seede+k);
+					modelerr1=normal(seede+k); modelerr2=normal(seede+k+99999);
+					modelerr=sndelta#modelerr1+sqrt(1-sndelta#sndelta)#modelerr2;
+					modelerr=modelerr#(modelerr1>=0)-modelerr#(modelerr1<0);
+					modelerr=snw*modelerr-mnshift;
+					allx1[whichrow, thisnode]=sqrt(abs(allx1[whichrow, whichpar]))*bigBx[whichpar, thisnode]+modelerr;
 				end; 
 				else allx1[whichrow, thisnode]=sige#normal(seedx+k);
 				
@@ -864,7 +897,6 @@ do nog=1 to nographs;
 			end;
 
 			run Tuning(lambda1, lambda2, bigBnow1, bigBnow2, lambmax, m, q, allx1, allx2, bigBini1, bigBini2);
-
 			randomseed=34646+nog+rep+whichnj;
 			run Find2score(PIscore, disc, tophowmany, allx1, allx2, bigBnow1, bigBnow2, randomseed); 
 	
@@ -899,7 +931,7 @@ do nog=1 to nographs;
 				diffnd=keeptrack[1:tophowmany, 1];
 				if ncol(diffnd)>0 then do;
 					role_disc[diffnd, 1]=1; 
-					pickdiff=sum(element(diffnodes, diffnd));  /* the number of differential nodes that are also the top tophowmany nodes according to DISCERN2 score */
+					pickdiff=sum(element(diffnodes, diffnd));  /* the number of differential nodes that are also the top tophowmany nodes according to DISC score */
 					tpr4diff=pickdiff/nodiff; 							
 					spe4diff=ncol(xsect(setdif(ids, diffnd), notdiff))/(NoNode-nodiff); 
 					fdr4diff=ncol(xsect(diffnd, notdiff))/max(ncol(diffnd), nrow(diffnd)); 
@@ -933,7 +965,6 @@ do nog=1 to nographs;
 					 allpermx1=allpermx1//allx1[unitidx, ]; 
 					 allpermx2=allpermx2//allx2[unitidx, ];
 				end; 			
-
 
 				bigBnow1_perm=findgraph2(lambda1, allpermx1, bigBnow1); 
 				if (norm(bigBnow1_perm)=0) then do;
@@ -1029,7 +1060,7 @@ do nog=1 to nographs;
 
 			diffnd=loc(freq_disc[, 1]>0.5);
 			if ncol(diffnd)>0 then do;
-				pickdiff=sum(element(diffnodes, diffnd));  /* the number of differential nodes that are also the top tophowmany nodes according to DISCERN2 score */
+				pickdiff=sum(element(diffnodes, diffnd));  /* the number of differential nodes that are also the top tophowmany nodes according to DISC score */
 				tpr4diff=pickdiff/nodiff; 							
 				spe4diff=ncol(xsect(setdif(ids, diffnd), notdiff))/(NoNode-nodiff); 
 				fdr4diff=ncol(xsect(diffnd, notdiff))/max(ncol(diffnd), nrow(diffnd)); 
@@ -1055,31 +1086,31 @@ end;
 testout=testout[2:nrow(testout), ];
 emppower=emppower[2:nrow(emppower), ];
 
-create out.power from testout[colname=('nj'||'lambda1'||'lambda2'||'tophowmany'
+create out.power888 from testout[colname=('nj'||'lambda1'||'lambda2'||'tophowmany'
 ||'PItpr4diff_rnk'||'PIspe4diff_rnk'||'PIfdr4diff_rnk'||'DISCtpr4diff_rnk'||'DISCspe4diff_rnk'||'DISCfdr4diff_rnk'
 ||'PItpr4diff_emppw'||'PIspe4diff_emppw'||'PIfdr4diff_emppw'||'DISCtpr4diff_emppw'||'DISCspe4diff_emppw'||'DISCfdr4diff_emppw'
 ||'PItpr4driv_rnk'||'PIspe4driv_rnk'||'PIfdr4driv_rnk'||'DISCtpr4driv_rnk'||'DISCspe4driv_rnk'||'DISCfdr4driv_rnk'
 ||'PItpr4driv_emppw'||'PIspe4driv_emppw'||'PIfdr4driv_emppw'||'DISCtpr4driv_emppw'||'DISCspe4driv_emppw'||'DISCfdr4driv_emppw')]; 
 append from testout; 
 
-create out.emppower from emppower[colname=
+create out.emppower888 from emppower[colname=
 		('nj'||'DfOmn_PIdiff'||'DfOmd_PIdiff'||'DrOmn_PIdiff'||'DrOmd_PIdiff'||'DfDrmn_PIdiff'||'DfDrmd_PIdiff'||'Neitmn_PIdiff'||'Neitmd_PIdiff'
 	   		 ||'DfOmn_DISCdiff'||'DfOmd_DISCdiff'||'DrOmn_DISCdiff'||'DrOmd_DISCdiff'||'DfDrmn_DISCdiff'||'DfDrmd_DISCdiff'||'Neitmn_DISCdiff'||'Neitmd_DISCdiff'
 			 ||'DfOmn_PIdriv'||'DfOmd_PIdriv'||'DrOmn_PIdriv'||'DrOmd_PIdriv'||'DfDrmn_PIdriv'||'DfDrmd_PIdriv'||'Neitmn_PIdriv'||'Neitmd_PIdriv'
 	   		 ||'DfOmn_DISCdriv'||'DfOmd_DISCdriv'||'DrOmn_DISCdriv'||'DrOmd_DISCdriv'||'DfDrmn_DISCdriv'||'DfDrmd_DISCdriv'||'Neitmn_DISCdriv'||'Neitmd_DISCdriv')]; 
 append from emppower;
 quit; 
-proc sort data=out.power; by nj;
+proc sort data=out.power888; by nj;
 run; 
 
-proc means data=out.power mean stderr median n;
+proc means data=out.power888 mean stderr median n;
 	by nj;
 run;
 
-proc sort data=out.emppower; by nj;
+proc sort data=out.emppower888; by nj;
 run; 
 
-proc means data=out.emppower mean stderr median n;
+proc means data=out.emppower888 mean stderr median n;
 	by nj;
 run;
 
